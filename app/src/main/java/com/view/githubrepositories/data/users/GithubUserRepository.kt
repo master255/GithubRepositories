@@ -1,0 +1,96 @@
+package com.view.githubrepositories.data.users
+
+import com.view.githubrepositories.core.Abstract
+import com.view.githubrepositories.core.SaveState
+import com.view.githubrepositories.data.core.DataByNotFoundState
+import com.view.githubrepositories.data.repositories.DataByStateNotFoundException
+import com.view.githubrepositories.data.users.cache.CacheGithubUser
+import com.view.githubrepositories.data.users.cache.GithubUserCacheDataSource
+import com.view.githubrepositories.data.users.cache.prefs.UserCachedState
+import com.view.githubrepositories.data.users.cloud.CloudGithubUser
+import com.view.githubrepositories.data.users.cloud.GithubUserCloudDataSource
+import com.view.githubrepositories.ui.users.CollapseOrExpandState
+import io.reactivex.Single
+
+
+/**
+ * @author Master255 on 24.08.2021
+ * masters@inbox.ru
+ */
+
+interface GithubUserRepository<T,E> : SaveState,DataByNotFoundState<DataGithubUser> {
+
+    fun user(query: String): T
+
+    fun users() : E
+
+    class Base(
+        private val githubUserCloudDataSource: GithubUserCloudDataSource<Single<CloudGithubUser>>,
+        private val githubUserCacheDataSource: GithubUserCacheDataSource,
+        private val dataGithubUserMapper: Abstract.UserMapper<DataGithubUser>,
+        private val cacheGithubUserMapper: Abstract.UserMapper<CacheGithubUser>,
+        private val userCachedState: UserCachedState
+    ) : GithubUserRepository<Single<DataGithubUser>,Single<List<DataGithubUser>>> {
+
+        override fun user(query: String): Single<DataGithubUser> {
+           val userByQuery = githubUserCacheDataSource.commonUser(query)
+            return userCachedState.user(query,githubUserCacheDataSource)
+               .flatMap {cacheGithubUser ->
+                    Single.just(cacheGithubUser.map(dataGithubUserMapper))
+                }.onErrorResumeNext {
+                    //if user by query and state not found, but found by query: throw DataByStateNotFoundException()
+                    if (userByQuery != null) {
+                        dataByNotFoundState()
+                    }
+                    userByQueryFromCloud(query)
+                }
+        }
+
+        private fun userByQueryFromCloud(query: String) : Single<DataGithubUser> {
+            return try {
+                githubUserCloudDataSource.fetchData(query)
+                    .flatMap { cloudGithubUser -> githubUserCacheDataSource.saveData( cloudGithubUser.map(cacheGithubUserMapper) )
+                        Single.just(cloudGithubUser.map(dataGithubUserMapper))
+                    }
+            } catch (e: Exception) {
+                throw e
+            }
+        }
+
+        override fun users(): Single<List<DataGithubUser>>
+            = userCachedState.users(githubUserCacheDataSource).flatMap { cacheGithubUsers ->
+                Single.just(cacheGithubUsers.map { it.map(dataGithubUserMapper) })
+        }
+
+
+        override fun dataByNotFoundState(): Single<List<DataGithubUser>>
+            = throw DataByStateNotFoundException()
+
+        override fun saveState(state: CollapseOrExpandState)
+            = userCachedState.saveState(state)
+
+    }
+
+    class Test(
+        private val testCloudDataSourceUser: GithubUserCloudDataSource<GithubUserCloudDataSource.Test.TestDataGithubUser>
+    ) : GithubUserRepository<GithubUserCloudDataSource.Test.TestDataGithubUser,List<GithubUserCloudDataSource.Test.TestDataGithubUser>> {
+
+        override fun user(query: String): GithubUserCloudDataSource.Test.TestDataGithubUser
+            = testCloudDataSourceUser.fetchData(query)
+
+        override fun users(): List<GithubUserCloudDataSource.Test.TestDataGithubUser>
+            = listOf(
+                GithubUserCloudDataSource.Test.TestDataGithubUser("Bib","This is short Bib bio"),
+                GithubUserCloudDataSource.Test.TestDataGithubUser("Lob","This is short Lob bio"),
+                GithubUserCloudDataSource.Test.TestDataGithubUser("Tip","This is short Tip bio")
+            )
+
+        override fun saveState(state: CollapseOrExpandState)
+                = throw IllegalStateException("TestGithubUserRepository not use saveData() method")
+
+        override fun dataByNotFoundState(): Single<List<DataGithubUser>>
+                = throw IllegalStateException("TestGithubUserRepository not use saveData() method")
+    }
+
+
+}
